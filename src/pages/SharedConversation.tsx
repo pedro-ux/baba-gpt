@@ -26,7 +26,7 @@ const SharedConversation = () => {
       .from("shared_conversations")
       .select("title, messages")
       .eq("id", id)
-      .single()
+      .maybeSingle()
       .then(({ data, error: err }) => {
         if (err || !data) {
           setError(true);

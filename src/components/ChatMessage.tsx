@@ -19,9 +19,13 @@ interface ChatMessageProps {
 
 // Strip the SOURCES: block from the end of AI responses (we display them separately)
 const stripSourcesBlock = (text: string) => {
-  const sourcesIndex = text.lastIndexOf("SOURCES:");
-  if (sourcesIndex === -1) return text;
-  return text.slice(0, sourcesIndex).trimEnd();
+  let cleaned = text;
+  // Strip ANSWER_TYPE line
+  cleaned = cleaned.replace(/\n?ANSWER[_\s]?TYPE:\s*(DIRECT|INFERRED)\n?/gi, "");
+  // Strip SOURCES block
+  const sourcesIndex = cleaned.lastIndexOf("SOURCES:");
+  if (sourcesIndex !== -1) cleaned = cleaned.slice(0, sourcesIndex);
+  return cleaned.trimEnd();
 };
 
 const ChatMessage = ({ role, content, sources, isStreaming, answerType }: ChatMessageProps) => {

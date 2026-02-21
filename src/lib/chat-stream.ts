@@ -91,7 +91,7 @@ export async function streamChat({
           const content = parsed.choices?.[0]?.delta?.content;
           if (content) {
             // Filter out the ANSWER_TYPE classification line
-            const cleaned = content.replace(/\n?ANSWER_TYPE:\s*(DIRECT|INFERRED)\n?/gi, "");
+            const cleaned = content.replace(/\n?ANSWER[_\s]?TYPE:\s*(DIRECT|INFERRED)\n?/gi, "");
             if (cleaned) onDelta(cleaned);
           }
         } catch {
