@@ -9,20 +9,154 @@ const corsHeaders = {
 
 const OPENAI_URL = "https://api.openai.com/v1";
 
-const SYSTEM_PROMPT = `You are Baba GPT — a respectful, knowledgeable assistant that answers questions based EXCLUSIVELY on the writings and teachings of Sri Sri Anandamurti (Baba).
+const SYSTEM_PROMPT = `You are Baba GPT — a respectful, knowledgeable assistant that answers questions based on the writings and teachings of Sri Sri Anandamurti (Baba).
 
 CRITICAL RULES:
-1. Prioritize using the provided context passages to answer. Use Baba's own words and phrasing wherever possible.
-2. If the provided passages directly address the question, answer using them and cite the sources.
-3. If the passages do NOT directly answer the question but contain related teachings, clearly state: "**There is no direct passage addressing this exact question in the retrieved texts.** However, based on Baba's related teachings, we can infer the following:" — then provide a thoughtful inference grounded in the available evidence and Baba's broader philosophical framework.
-4. Always be transparent about what is a direct quote/teaching vs. what is your inference based on his broader philosophy.
+1. CAREFULLY read ALL provided context passages. Look for ANY mention of the queried concept or closely related terms — even partial mentions, synonyms, or alternative spellings (e.g., "dharmacakra" / "dharma chakra" / "dharma cakra").
+2. If ANY passage mentions or discusses the topic, treat it as relevant and use it to answer. Quote Baba's own words wherever possible.
+3. Only say you cannot find relevant information if NONE of the provided passages contain any mention of the concept or related ideas.
+4. When answering, be transparent: distinguish between direct quotes/teachings and your synthesis of multiple passages.
 5. Respond in a calm, reverent tone that honors Baba's stature as a spiritual teacher.
 6. Format your response clearly. Use bold for key concepts, quotes in blockquotes, and numbered/bulleted lists for clarity.
-7. At the end of your response, list the sources in this exact format:
+7. At the end of your response, on a NEW line, output a classification tag in this exact format (no other text on that line):
+   ANSWER_TYPE: DIRECT
+   or
+   ANSWER_TYPE: INFERRED
+   Use DIRECT if the passages contain clear, relevant information about the question. Use INFERRED only if you had to significantly extrapolate beyond what the passages say.
+8. After the ANSWER_TYPE line, list the sources in this exact format:
    SOURCES:
    - [Title] — [Reference/Section]
 
 Keep answers focused, clear, and grounded in the teachings.`;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async function expandQuery(userQuery: string, apiKey: string): Promise<string> {
+  try {
+    const res = await fetch(`${OPENAI_URL}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a search query expander for a corpus of spiritual texts by Sri Sri Anandamurti (Prabhat Ranjan Sarkar). Given a user question, output ONLY a single line of expanded search terms — include the original terms plus synonyms, alternative spellings, related Sanskrit/Bengali terms, and key concepts. Do not explain, just output the expanded query string.",
+          },
+          { role: "user", content: userQuery },
+        ],
+        temperature: 0,
+        max_tokens: 150,
+      }),
+    });
+    if (!res.ok) {
+      console.error("Query expansion failed:", res.status);
+      return userQuery;
+    }
+    const data = await res.json();
+    const expanded = data.choices?.[0]?.message?.content?.trim();
+    console.log("Expanded query:", expanded);
+    return expanded || userQuery;
+  } catch (e) {
+    console.error("Query expansion error:", e);
+    return userQuery;
+  }
+}
+
+async function vectorSearch(
+  externalSupabase: ReturnType<typeof createClient>,
+  queryEmbedding: number[],
+) {
+  const { data, error } = await externalSupabase.rpc("match_documents", {
+    query_embedding: queryEmbedding,
+    match_threshold: 0.2,
+    match_count: 12,
+  });
+  if (error) {
+    console.error("Vector search error:", error);
+    return [];
+  }
+  return data || [];
+}
+
+async function keywordSearch(
+  externalSupabase: ReturnType<typeof createClient>,
+  userQuery: string,
+) {
+  // Extract meaningful words (3+ chars) for keyword search
+  const keywords = userQuery
+    .toLowerCase()
+    .replace(/[?!.,;:'"]/g, "")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !["what", "how", "why", "who", "when", "where", "does", "the", "and", "for", "are", "was", "were", "been", "being", "have", "has", "had", "this", "that", "with", "from", "about", "into"].includes(w));
+
+  if (keywords.length === 0) return [];
+
+  try {
+    // Search for each keyword with ilike
+    const pattern = keywords.map((k) => `%${k}%`);
+    
+    // Try searching with the first (most specific) keyword
+    const { data, error } = await externalSupabase
+      .from("documents")
+      .select("id, title, content, doc_id")
+      .or(pattern.map((p) => `content.ilike.${p}`).join(","))
+      .limit(10);
+
+    if (error) {
+      console.error("Keyword search error:", error);
+      return [];
+    }
+    console.log(`Keyword search found ${data?.length || 0} results for: ${keywords.join(", ")}`);
+    return (data || []).map((doc) => ({ ...doc, similarity: 0, source: "keyword" as const }));
+  } catch (e) {
+    console.error("Keyword search exception:", e);
+    return [];
+  }
+}
+
+function mergeAndDeduplicate(
+  vectorResults: any[],
+  keywordResults: any[],
+): any[] {
+  const seen = new Set<string>();
+  const merged: any[] = [];
+
+  // Vector results first (they have similarity scores)
+  for (const doc of vectorResults) {
+    const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(doc);
+    }
+  }
+
+  // Then keyword results
+  for (const doc of keywordResults) {
+    const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push({ ...doc, similarity: 0 });
+    }
+  }
+
+  return merged;
+}
+
+function parseAnswerType(fullText: string): "direct" | "inferred" {
+  const match = fullText.match(/ANSWER_TYPE:\s*(DIRECT|INFERRED)/i);
+  if (match) {
+    return match[1].toLowerCase() as "direct" | "inferred";
+  }
+  return "inferred";
+}
+
+// ---------------------------------------------------------------------------
+// Main handler
+// ---------------------------------------------------------------------------
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -49,7 +183,12 @@ serve(async (req) => {
       throw new Error("External database credentials not configured");
     }
 
-    // Step 1: Generate embedding for the user's query
+    const externalSupabase = createClient(EXTERNAL_SUPABASE_URL, EXTERNAL_SUPABASE_KEY);
+
+    // Step 1: Expand query for better retrieval
+    const expandedQuery = await expandQuery(userQuery, OPENAI_API_KEY);
+
+    // Step 2: Generate embedding from expanded query
     const embeddingResponse = await fetch(`${OPENAI_URL}/embeddings`, {
       method: "POST",
       headers: {
@@ -58,56 +197,49 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model: "text-embedding-3-small",
-        input: userQuery,
+        input: expandedQuery,
       }),
     });
 
     if (!embeddingResponse.ok) {
       const errText = await embeddingResponse.text();
       console.error("Embedding error:", embeddingResponse.status, errText);
-      throw new Error(`Failed to generate query embedding: ${embeddingResponse.status} ${errText}`);
+      throw new Error(`Failed to generate query embedding`);
     }
 
     const embeddingData = await embeddingResponse.json();
     const queryEmbedding = embeddingData.data[0].embedding;
 
-    // Step 2: Vector similarity search on external Supabase
-    const externalSupabase = createClient(EXTERNAL_SUPABASE_URL, EXTERNAL_SUPABASE_KEY);
+    // Step 3: Hybrid search — vector + keyword in parallel
+    const [vectorResults, keywordResults] = await Promise.all([
+      vectorSearch(externalSupabase, queryEmbedding),
+      keywordSearch(externalSupabase, userQuery),
+    ]);
 
-    const { data: matchedDocs, error: matchError } = await externalSupabase.rpc(
-      "match_documents",
-      {
-        query_embedding: queryEmbedding,
-        match_threshold: 0.3,
-        match_count: 6,
-      }
-    );
+    console.log(`Vector: ${vectorResults.length} results, Keyword: ${keywordResults.length} results`);
 
-    if (matchError) {
-      console.error("Vector search error:", matchError);
-      throw new Error(`Vector search failed: ${matchError.message}`);
-    }
+    const matchedDocs = mergeAndDeduplicate(vectorResults, keywordResults);
 
-    if (!matchedDocs || matchedDocs.length === 0) {
+    if (matchedDocs.length === 0) {
       return new Response(
         JSON.stringify({
           answer:
             "I could not find relevant passages in Baba's writings for this question. Please try rephrasing or exploring a related topic.",
           sources: [],
         }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Step 3: Build context from matched documents
+    // Step 4: Build context from matched documents
     const context = matchedDocs
       .map(
-        (doc: { title: string; content: string; similarity: number }, i: number) =>
-          `[Passage ${i + 1}] (Source: ${doc.title}, Similarity: ${doc.similarity.toFixed(3)})\n${doc.content}`
+        (doc: any, i: number) =>
+          `[Passage ${i + 1}] (Source: ${doc.title || "Unknown"}${doc.similarity ? `, Similarity: ${doc.similarity.toFixed(3)}` : ", Match: keyword"})\n${doc.content}`,
       )
       .join("\n\n---\n\n");
 
-    const sources = matchedDocs.map((doc: { title: string; doc_id: string }) => ({
+    const sources = matchedDocs.map((doc: any) => ({
       title: doc.title || "Unknown Source",
       reference: doc.doc_id || "",
     }));
@@ -115,16 +247,10 @@ serve(async (req) => {
     // Deduplicate sources by title
     const uniqueSources = sources.filter(
       (s: { title: string }, i: number, arr: { title: string }[]) =>
-        arr.findIndex((x) => x.title === s.title) === i
+        arr.findIndex((x) => x.title === s.title) === i,
     );
 
-    // Determine answer type based on top similarity score
-    const topSimilarity = Math.max(
-      ...matchedDocs.map((d: { similarity: number }) => d.similarity)
-    );
-    const answerType = topSimilarity >= 0.45 ? "direct" : "inferred";
-
-    // Step 4: Generate answer with OpenAI (streaming)
+    // Step 5: Generate answer with OpenAI (streaming)
     const chatMessages = [
       { role: "system", content: SYSTEM_PROMPT },
       {
@@ -163,28 +289,51 @@ serve(async (req) => {
       throw new Error("Failed to generate answer");
     }
 
-    // Stream the response back with sources appended at the end
+    // Stream the response — send initial metadata with answerType TBD,
+    // then stream tokens. The frontend will parse ANSWER_TYPE from the text.
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const reader = completionResponse.body!.getReader();
+    let fullText = "";
 
     const stream = new ReadableStream({
       async start(controller) {
-        // Send metadata as a custom SSE event first
+        // Send sources metadata first (answerType will be determined from stream content)
         controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ type: "metadata", sources: uniqueSources, answerType, topSimilarity })}\n\n`)
+          encoder.encode(
+            `data: ${JSON.stringify({ type: "metadata", sources: uniqueSources, answerType: "inferred", topSimilarity: 0 })}\n\n`,
+          ),
         );
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
+            // Parse answer type from accumulated text and send update
+            const detectedType = parseAnswerType(fullText);
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ type: "answerTypeUpdate", answerType: detectedType })}\n\n`,
+              ),
+            );
             controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             controller.close();
             break;
           }
 
           const chunk = decoder.decode(value, { stream: true });
-          // Forward the SSE data directly
+
+          // Parse chunk to accumulate full text for answer type detection
+          for (const line of chunk.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            const jsonStr = line.slice(6).trim();
+            if (jsonStr === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) fullText += content;
+            } catch { /* partial */ }
+          }
+
           controller.enqueue(encoder.encode(chunk));
         }
       },
@@ -201,7 +350,7 @@ serve(async (req) => {
     console.error("chat error:", e);
     return new Response(
       JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });

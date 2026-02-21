@@ -81,9 +81,19 @@ export async function streamChat({
             continue;
           }
 
-          // Handle OpenAI streaming delta
+          // Handle LLM-determined answer type update (sent at end of stream)
+          if (parsed.type === "answerTypeUpdate") {
+            if (parsed.answerType) onAnswerType(parsed.answerType);
+            continue;
+          }
+
+          // Handle OpenAI streaming delta — strip ANSWER_TYPE line from display
           const content = parsed.choices?.[0]?.delta?.content;
-          if (content) onDelta(content);
+          if (content) {
+            // Filter out the ANSWER_TYPE classification line
+            const cleaned = content.replace(/\n?ANSWER_TYPE:\s*(DIRECT|INFERRED)\n?/gi, "");
+            if (cleaned) onDelta(cleaned);
+          }
         } catch {
           // Partial JSON, put it back
           textBuffer = line + "\n" + textBuffer;
