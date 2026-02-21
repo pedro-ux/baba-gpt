@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import { Plus, MessageSquare, ChevronLeft, Trash2 } from "lucide-react";
+import { Plus, MessageSquare, ChevronLeft, Trash2, Share2, Check, Link } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import SuggestedQuestions from "@/components/SuggestedQuestions";
@@ -51,6 +52,7 @@ const Index = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const hasMessages = messages.length > 0;
 
@@ -94,6 +96,27 @@ const Index = () => {
       setActiveId(null);
     }
   }, [activeId]);
+
+  const handleShare = useCallback(async () => {
+    if (messages.length === 0 || sharing) return;
+    setSharing(true);
+    try {
+      const title = getPreviewTitle(messages);
+      const { data, error } = await supabase
+        .from("shared_conversations")
+        .insert({ title, messages: messages as any })
+        .select("id")
+        .single();
+      if (error || !data) throw new Error(error?.message || "Failed to share");
+      const url = `${window.location.origin}/shared/${data.id}`;
+      await navigator.clipboard.writeText(url);
+      toast.success("Link copied to clipboard!");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to share conversation");
+    } finally {
+      setSharing(false);
+    }
+  }, [messages, sharing]);
 
   const handleSend = async (input: string) => {
     // Create a new conversation if none active
@@ -278,13 +301,25 @@ const Index = () => {
               Baba GPT
             </h1>
           </div>
-          <button
-            onClick={startNewConversation}
-            className="p-2 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
-            title="New conversation"
-          >
-            <Plus className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            {hasMessages && (
+              <button
+                onClick={handleShare}
+                disabled={sharing}
+                className="p-2 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                title="Share conversation"
+              >
+                {sharing ? <Check className="w-5 h-5" /> : <Share2 className="w-5 h-5" />}
+              </button>
+            )}
+            <button
+              onClick={startNewConversation}
+              className="p-2 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+              title="New conversation"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          </div>
         </header>
 
         {/* Main content */}
