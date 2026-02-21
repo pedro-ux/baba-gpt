@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { BookOpen, BookCheck, Lightbulb } from "lucide-react";
+import logo from "@/assets/logo.png";
 import ReactMarkdown from "react-markdown";
 import type { AnswerType } from "@/lib/chat-stream";
 
@@ -43,9 +44,7 @@ const ChatMessage = ({ role, content, sources, isStreaming, answerType }: ChatMe
       >
         {!isUser && (
           <div className="flex items-center gap-2 mb-3">
-            <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
-              <span className="text-primary text-xs font-display font-bold">ॐ</span>
-            </div>
+            <img src={logo} alt="Baba" className="w-6 h-6 rounded-full object-cover" />
             <span className="text-xs text-muted-foreground font-body tracking-wide uppercase">
               Baba
             </span>
