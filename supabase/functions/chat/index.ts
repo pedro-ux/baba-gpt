@@ -118,6 +118,12 @@ serve(async (req) => {
         arr.findIndex((x) => x.title === s.title) === i
     );
 
+    // Determine answer type based on top similarity score
+    const topSimilarity = Math.max(
+      ...matchedDocs.map((d: { similarity: number }) => d.similarity)
+    );
+    const answerType = topSimilarity >= 0.45 ? "direct" : "inferred";
+
     // Step 4: Generate answer with OpenAI (streaming)
     const chatMessages = [
       { role: "system", content: SYSTEM_PROMPT },
@@ -164,9 +170,9 @@ serve(async (req) => {
 
     const stream = new ReadableStream({
       async start(controller) {
-        // Send sources as a custom SSE event first
+        // Send metadata as a custom SSE event first
         controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ type: "sources", sources: uniqueSources })}\n\n`)
+          encoder.encode(`data: ${JSON.stringify({ type: "metadata", sources: uniqueSources, answerType, topSimilarity })}\n\n`)
         );
 
         while (true) {

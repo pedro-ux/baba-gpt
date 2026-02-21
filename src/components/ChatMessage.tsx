@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
-import { BookOpen } from "lucide-react";
+import { BookOpen, BookCheck, Lightbulb } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import type { AnswerType } from "@/lib/chat-stream";
 
 interface Source {
   title: string;
@@ -12,6 +13,7 @@ interface ChatMessageProps {
   content: string;
   sources?: Source[];
   isStreaming?: boolean;
+  answerType?: AnswerType;
 }
 
 // Strip the SOURCES: block from the end of AI responses (we display them separately)
@@ -21,7 +23,7 @@ const stripSourcesBlock = (text: string) => {
   return text.slice(0, sourcesIndex).trimEnd();
 };
 
-const ChatMessage = ({ role, content, sources, isStreaming }: ChatMessageProps) => {
+const ChatMessage = ({ role, content, sources, isStreaming, answerType }: ChatMessageProps) => {
   const isUser = role === "user";
   const displayContent = isUser ? content : stripSourcesBlock(content);
 
@@ -47,6 +49,27 @@ const ChatMessage = ({ role, content, sources, isStreaming }: ChatMessageProps) 
             <span className="text-xs text-muted-foreground font-body tracking-wide uppercase">
               Baba
             </span>
+            {answerType && !isStreaming && (
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-body font-medium tracking-wide uppercase ${
+                  answerType === "direct"
+                    ? "bg-primary/15 text-primary"
+                    : "bg-lotus/15 text-lotus"
+                }`}
+              >
+                {answerType === "direct" ? (
+                  <>
+                    <BookCheck className="w-3 h-3" />
+                    Direct Source
+                  </>
+                ) : (
+                  <>
+                    <Lightbulb className="w-3 h-3" />
+                    Inferred
+                  </>
+                )}
+              </span>
+            )}
           </div>
         )}
 

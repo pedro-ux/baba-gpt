@@ -5,18 +5,14 @@ import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import SuggestedQuestions from "@/components/SuggestedQuestions";
 import BreathingLoader from "@/components/BreathingLoader";
-import { streamChat } from "@/lib/chat-stream";
+import { streamChat, type Source, type AnswerType } from "@/lib/chat-stream";
 import heroBg from "@/assets/hero-bg.jpg";
-
-interface Source {
-  title: string;
-  reference: string;
-}
 
 interface Message {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
+  answerType?: AnswerType;
 }
 
 const Index = () => {
@@ -36,6 +32,7 @@ const Index = () => {
 
     let assistantContent = "";
     let assistantSources: Source[] = [];
+    let assistantAnswerType: AnswerType = "direct";
 
     const upsertAssistant = (nextChunk: string) => {
       assistantContent += nextChunk;
@@ -44,13 +41,13 @@ const Index = () => {
         if (last?.role === "assistant") {
           return prev.map((m, i) =>
             i === prev.length - 1
-              ? { ...m, content: assistantContent, sources: assistantSources }
+              ? { ...m, content: assistantContent, sources: assistantSources, answerType: assistantAnswerType }
               : m
           );
         }
         return [
           ...prev,
-          { role: "assistant" as const, content: assistantContent, sources: assistantSources },
+          { role: "assistant" as const, content: assistantContent, sources: assistantSources, answerType: assistantAnswerType },
         ];
       });
     };
@@ -65,13 +62,15 @@ const Index = () => {
       onSources: (sources) => {
         assistantSources = sources;
       },
+      onAnswerType: (type) => {
+        assistantAnswerType = type;
+      },
       onDone: () => {
         setIsLoading(false);
-        // Final update with sources
         setMessages((prev) =>
           prev.map((m, i) =>
             i === prev.length - 1 && m.role === "assistant"
-              ? { ...m, sources: assistantSources }
+              ? { ...m, sources: assistantSources, answerType: assistantAnswerType }
               : m
           )
         );
