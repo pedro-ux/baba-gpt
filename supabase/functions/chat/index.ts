@@ -18,14 +18,16 @@ CRITICAL RULES:
 4. When answering, be transparent: distinguish between direct quotes/teachings and your synthesis of multiple passages.
 5. Respond in a calm, reverent tone that honors Baba's stature as a spiritual teacher.
 6. Format your response clearly. Use bold for key concepts, quotes in blockquotes, and numbered/bulleted lists for clarity.
-7. At the end of your response, on a NEW line, output a classification tag in this exact format (no other text on that line):
+7. ALWAYS cite sources by their EXACT title as provided in the context passages (e.g., "Ananda Marga Philosophy in a Nutshell", "Subháśita Saḿgraha Part 4"). NEVER refer to sources as "Passage 1", "Passage 2", etc.
+8. When making a specific claim or quoting, include the source title inline, e.g.: As Baba explains in **Ananda Marga Philosophy in a Nutshell**: ...
+9. At the end of your response, on a NEW line, output a classification tag in this exact format (no other text on that line):
    ANSWER_TYPE: DIRECT
    or
    ANSWER_TYPE: INFERRED
    Use DIRECT if the passages contain clear, relevant information about the question. Use INFERRED only if you had to significantly extrapolate beyond what the passages say.
-8. After the ANSWER_TYPE line, list the sources in this exact format:
+10. After the ANSWER_TYPE line, list the sources in this exact format, using the actual title and reference from the provided passages:
    SOURCES:
-   - [Title] — [Reference/Section]
+   - [Exact Title from passage] — [Reference/doc_id from passage]
 
 Keep answers focused, clear, and grounded in the teachings.`;
 
@@ -238,8 +240,8 @@ serve(async (req) => {
     // Step 4: Build context from matched documents
     const context = matchedDocs
       .map(
-        (doc: any, i: number) =>
-          `[Passage ${i + 1}] (Source: ${doc.title || "Unknown"}${doc.similarity ? `, Similarity: ${doc.similarity.toFixed(3)}` : ", Match: keyword"})\n${doc.content}`,
+        (doc: any) =>
+          `[Source: "${doc.title || "Unknown"}" | Ref: ${doc.doc_id || "N/A"}]\n${doc.content}`,
       )
       .join("\n\n---\n\n");
 
