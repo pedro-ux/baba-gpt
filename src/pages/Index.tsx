@@ -8,6 +8,7 @@ import SuggestedQuestions from "@/components/SuggestedQuestions";
 import BreathingLoader from "@/components/BreathingLoader";
 import { streamChat, type Source, type AnswerType } from "@/lib/chat-stream";
 import heroBg from "@/assets/hero-bg.jpg";
+import logo from "@/assets/logo.png";
 
 interface Message {
   role: "user" | "assistant";
@@ -205,9 +206,7 @@ const Index = () => {
         {/* Sidebar header */}
         <div className="p-4 border-b border-border/30 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center">
-              <span className="text-primary text-xs font-display font-bold">ॐ</span>
-            </div>
+            <img src={logo} alt="Baba GPT" className="w-7 h-7 rounded-full object-cover" />
             <span className="text-sm font-display font-semibold text-foreground">History</span>
           </div>
           <button
@@ -274,9 +273,7 @@ const Index = () => {
             <ChevronLeft className={`w-5 h-5 transition-transform ${sidebarOpen ? "" : "rotate-180"}`} />
           </button>
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-primary/15 flex items-center justify-center">
-              <span className="text-primary text-sm font-display font-bold">ॐ</span>
-            </div>
+            <img src={logo} alt="Baba GPT" className="w-9 h-9 rounded-full object-cover" />
             <h1 className="text-lg font-display font-semibold text-foreground tracking-wide">
               Baba GPT
             </h1>
@@ -300,13 +297,13 @@ const Index = () => {
                 transition={{ duration: 0.8 }}
                 className="text-center mb-10"
               >
-                <motion.div
-                  className="w-16 h-16 mx-auto mb-6 rounded-full bg-primary/10 flex items-center justify-center"
-                  animate={{ scale: [1, 1.05, 1] }}
-                  transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-                >
-                  <span className="text-primary text-2xl font-display">ॐ</span>
-                </motion.div>
+              <motion.img
+                src={logo}
+                alt="Baba GPT"
+                className="w-20 h-20 mx-auto mb-6 rounded-full object-cover"
+                animate={{ scale: [1, 1.05, 1] }}
+                transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+              />
                 <h2 className="text-3xl md:text-4xl font-display font-semibold text-foreground mb-3">
                   Ask Baba a question
                 </h2>
