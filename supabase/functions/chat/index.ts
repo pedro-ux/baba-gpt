@@ -124,22 +124,26 @@ function mergeAndDeduplicate(
 ): any[] {
   const seen = new Set<string>();
   const merged: any[] = [];
+  const MAX_RESULTS = 8;
+  const MAX_CONTENT_LENGTH = 1500;
 
   // Vector results first (they have similarity scores)
   for (const doc of vectorResults) {
+    if (merged.length >= MAX_RESULTS) break;
     const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
     if (!seen.has(key)) {
       seen.add(key);
-      merged.push(doc);
+      merged.push({ ...doc, content: doc.content?.slice(0, MAX_CONTENT_LENGTH) || "" });
     }
   }
 
   // Then keyword results
   for (const doc of keywordResults) {
+    if (merged.length >= MAX_RESULTS) break;
     const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
     if (!seen.has(key)) {
       seen.add(key);
-      merged.push({ ...doc, similarity: 0 });
+      merged.push({ ...doc, similarity: 0, content: doc.content?.slice(0, MAX_CONTENT_LENGTH) || "" });
     }
   }
 
