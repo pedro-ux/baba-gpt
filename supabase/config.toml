@@ -1,1 +1,7 @@
 project_id = "lyjusrwikfrdcuelmzby"
+
+[functions.explore-schema]
+verify_jwt = false
+
+[functions.chat]
+verify_jwt = false
