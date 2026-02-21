@@ -1,33 +1,23 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import SuggestedQuestions from "@/components/SuggestedQuestions";
 import BreathingLoader from "@/components/BreathingLoader";
+import { streamChat } from "@/lib/chat-stream";
 import heroBg from "@/assets/hero-bg.jpg";
+
+interface Source {
+  title: string;
+  reference: string;
+}
 
 interface Message {
   role: "user" | "assistant";
   content: string;
-  sources?: { title: string; reference: string }[];
+  sources?: Source[];
 }
-
-// Mock response for demo — will be replaced with RAG backend
-const getMockResponse = (question: string): Promise<Message> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        role: "assistant",
-        content:
-          "The mind is the subtle expression of the body. It is through the mind that consciousness interacts with the material world. The mind has layers — the conscious, subconscious, and superconscious — each playing a role in our spiritual evolution. Through regular meditation practice, one can transcend the limitations of the crude mind and move toward the infinite awareness that is our true nature.",
-        sources: [
-          { title: "Ananda Marga Philosophy in a Nutshell", reference: "Part 4, Chapter 7" },
-          { title: "Subháśita Saḿgraha", reference: "Part 1, Discourse 3" },
-        ],
-      });
-    }, 2000);
-  });
-};
 
 const Index = () => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -44,20 +34,65 @@ const Index = () => {
     setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
 
-    try {
-      const response = await getMockResponse(input);
-      setMessages((prev) => [...prev, response]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "I'm sorry, I was unable to find an answer in Baba's writings for this question. Please try rephrasing.",
-        },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
+    let assistantContent = "";
+    let assistantSources: Source[] = [];
+
+    const upsertAssistant = (nextChunk: string) => {
+      assistantContent += nextChunk;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant") {
+          return prev.map((m, i) =>
+            i === prev.length - 1
+              ? { ...m, content: assistantContent, sources: assistantSources }
+              : m
+          );
+        }
+        return [
+          ...prev,
+          { role: "assistant" as const, content: assistantContent, sources: assistantSources },
+        ];
+      });
+    };
+
+    await streamChat({
+      query: input,
+      messages: [...messages, userMessage].map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+      onDelta: (chunk) => upsertAssistant(chunk),
+      onSources: (sources) => {
+        assistantSources = sources;
+      },
+      onDone: () => {
+        setIsLoading(false);
+        // Final update with sources
+        setMessages((prev) =>
+          prev.map((m, i) =>
+            i === prev.length - 1 && m.role === "assistant"
+              ? { ...m, sources: assistantSources }
+              : m
+          )
+        );
+      },
+      onError: (error) => {
+        setIsLoading(false);
+        toast.error(error);
+        setMessages((prev) => [
+          ...prev,
+          ...(prev[prev.length - 1]?.role !== "assistant"
+            ? [
+                {
+                  role: "assistant" as const,
+                  content:
+                    "I'm sorry, I was unable to process your question at this time. Please try again.",
+                },
+              ]
+            : []),
+        ]);
+      },
+    });
   };
 
   return (
@@ -84,7 +119,6 @@ const Index = () => {
       {/* Main content */}
       <main className="flex-1 flex flex-col relative z-10">
         {!hasMessages ? (
-          /* Welcome screen */
           <div className="flex-1 flex flex-col items-center justify-center px-4 pb-8">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -110,19 +144,23 @@ const Index = () => {
             <SuggestedQuestions onSelect={handleSend} />
           </div>
         ) : (
-          /* Chat messages */
           <div className="flex-1 overflow-y-auto px-4 py-6">
             <div className="max-w-3xl mx-auto space-y-6">
               <AnimatePresence>
                 {messages.map((msg, i) => (
-                  <ChatMessage key={i} {...msg} />
+                  <ChatMessage
+                    key={i}
+                    {...msg}
+                    isStreaming={
+                      isLoading &&
+                      i === messages.length - 1 &&
+                      msg.role === "assistant"
+                    }
+                  />
                 ))}
               </AnimatePresence>
-              {isLoading && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                >
+              {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                   <BreathingLoader />
                 </motion.div>
               )}
@@ -131,7 +169,6 @@ const Index = () => {
           </div>
         )}
 
-        {/* Input area */}
         <div className="sticky bottom-0 py-4 bg-gradient-to-t from-background via-background to-transparent">
           <ChatInput onSend={handleSend} isLoading={isLoading} />
         </div>
