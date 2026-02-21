@@ -1,13 +1,16 @@
-interface Source {
+export interface Source {
   title: string;
   reference: string;
 }
+
+export type AnswerType = "direct" | "inferred";
 
 interface StreamChatOptions {
   query: string;
   messages?: { role: string; content: string }[];
   onDelta: (text: string) => void;
   onSources: (sources: Source[]) => void;
+  onAnswerType: (type: AnswerType) => void;
   onDone: () => void;
   onError: (error: string) => void;
 }
@@ -19,6 +22,7 @@ export async function streamChat({
   messages,
   onDelta,
   onSources,
+  onAnswerType,
   onDone,
   onError,
 }: StreamChatOptions) {
@@ -70,9 +74,10 @@ export async function streamChat({
         try {
           const parsed = JSON.parse(jsonStr);
 
-          // Handle custom sources event
-          if (parsed.type === "sources" && parsed.sources) {
-            onSources(parsed.sources);
+          // Handle custom metadata event
+          if (parsed.type === "metadata") {
+            if (parsed.sources) onSources(parsed.sources);
+            if (parsed.answerType) onAnswerType(parsed.answerType);
             continue;
           }
 
