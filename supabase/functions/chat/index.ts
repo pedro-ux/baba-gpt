@@ -35,6 +35,53 @@ Keep answers focused, clear, and grounded in the teachings.`;
 // Helpers
 // ---------------------------------------------------------------------------
 
+async function rewriteQueryWithHistory(
+  messages: { role: string; content: string }[],
+  latestQuery: string,
+  apiKey: string,
+): Promise<string> {
+  try {
+    // Build a condensed conversation summary for the rewriter
+    const historyText = messages
+      .slice(0, -1) // exclude the latest message
+      .map((m) => `${m.role}: ${m.content}`)
+      .slice(-6) // last 6 turns max
+      .join("\n");
+
+    const res = await fetch(`${OPENAI_URL}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a search query rewriter. Given a conversation history and the user's latest message, rewrite the latest message into a STANDALONE search query that captures the full intent including context from prior messages. Output ONLY the rewritten query, nothing else.",
+          },
+          {
+            role: "user",
+            content: `Conversation history:\n${historyText}\n\nLatest message: ${latestQuery}\n\nRewrite this into a standalone search query:`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 150,
+      }),
+    });
+    if (!res.ok) {
+      console.error("Query rewrite failed:", res.status);
+      return latestQuery;
+    }
+    const data = await res.json();
+    const rewritten = data.choices?.[0]?.message?.content?.trim();
+    console.log("Rewritten query:", rewritten);
+    return rewritten || latestQuery;
+  } catch (e) {
+    console.error("Query rewrite error:", e);
+    return latestQuery;
+  }
+}
+
 async function expandQuery(userQuery: string, apiKey: string): Promise<string> {
   try {
     const res = await fetch(`${OPENAI_URL}/chat/completions`, {
@@ -88,7 +135,6 @@ async function keywordSearch(
   externalSupabase: ReturnType<typeof createClient>,
   userQuery: string,
 ) {
-  // Extract meaningful words (3+ chars) for keyword search
   const keywords = userQuery
     .toLowerCase()
     .replace(/[?!.,;:'"]/g, "")
@@ -98,10 +144,8 @@ async function keywordSearch(
   if (keywords.length === 0) return [];
 
   try {
-    // Search for each keyword with ilike
     const pattern = keywords.map((k) => `%${k}%`);
     
-    // Try searching with the first (most specific) keyword
     const { data, error } = await externalSupabase
       .from("documents")
       .select("id, title, content, doc_id")
@@ -129,7 +173,6 @@ function mergeAndDeduplicate(
   const MAX_RESULTS = 8;
   const MAX_CONTENT_LENGTH = 1500;
 
-  // Vector results first (they have similarity scores)
   for (const doc of vectorResults) {
     if (merged.length >= MAX_RESULTS) break;
     const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
@@ -139,7 +182,6 @@ function mergeAndDeduplicate(
     }
   }
 
-  // Then keyword results
   for (const doc of keywordResults) {
     if (merged.length >= MAX_RESULTS) break;
     const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
@@ -191,10 +233,16 @@ serve(async (req) => {
 
     const externalSupabase = createClient(EXTERNAL_SUPABASE_URL, EXTERNAL_SUPABASE_KEY);
 
-    // Step 1: Expand query for better retrieval
-    const expandedQuery = await expandQuery(userQuery, OPENAI_API_KEY);
+    // Step 1: Rewrite query with conversation context if multi-turn
+    let searchQuery = userQuery;
+    if (messages && messages.length > 1) {
+      searchQuery = await rewriteQueryWithHistory(messages, userQuery, OPENAI_API_KEY);
+    }
 
-    // Step 2: Generate embedding from expanded query
+    // Step 2: Expand query for better retrieval
+    const expandedQuery = await expandQuery(searchQuery, OPENAI_API_KEY);
+
+    // Step 3: Generate embedding from expanded query
     const embeddingResponse = await fetch(`${OPENAI_URL}/embeddings`, {
       method: "POST",
       headers: {
@@ -216,10 +264,10 @@ serve(async (req) => {
     const embeddingData = await embeddingResponse.json();
     const queryEmbedding = embeddingData.data[0].embedding;
 
-    // Step 3: Hybrid search — vector + keyword in parallel
+    // Step 4: Hybrid search — vector + keyword in parallel
     const [vectorResults, keywordResults] = await Promise.all([
       vectorSearch(externalSupabase, queryEmbedding),
-      keywordSearch(externalSupabase, userQuery),
+      keywordSearch(externalSupabase, searchQuery),
     ]);
 
     console.log(`Vector: ${vectorResults.length} results, Keyword: ${keywordResults.length} results`);
@@ -237,7 +285,7 @@ serve(async (req) => {
       );
     }
 
-    // Step 4: Build context from matched documents
+    // Step 5: Build context from matched documents
     const context = matchedDocs
       .map(
         (doc: any) =>
@@ -250,29 +298,31 @@ serve(async (req) => {
       reference: doc.doc_id || "",
     }));
 
-    // Deduplicate sources by title
     const uniqueSources = sources.filter(
       (s: { title: string }, i: number, arr: { title: string }[]) =>
         arr.findIndex((x) => x.title === s.title) === i,
     );
 
-    // Step 5: Generate answer with OpenAI (streaming)
-    const chatMessages = [
+    // Step 6: Generate answer with OpenAI (streaming)
+    // Message ordering: system prompt → conversation history → context + latest question
+    const chatMessages: { role: string; content: string }[] = [
       { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: `Context passages from Baba's writings:\n\n${context}\n\n---\n\nUser question: ${userQuery}`,
-      },
     ];
 
-    // Include conversation history if provided
+    // Add conversation history BEFORE the context message
     if (messages && messages.length > 1) {
       const history = messages.slice(0, -1).map((m: { role: string; content: string }) => ({
         role: m.role,
         content: m.content,
       }));
-      chatMessages.splice(1, 0, ...history);
+      chatMessages.push(...history);
     }
+
+    // Context + latest question is always LAST (closest to the answer)
+    chatMessages.push({
+      role: "user",
+      content: `Context passages from Baba's writings:\n\n${context}\n\n---\n\nUser question: ${userQuery}`,
+    });
 
     const completionResponse = await fetch(`${OPENAI_URL}/chat/completions`, {
       method: "POST",
@@ -285,7 +335,7 @@ serve(async (req) => {
         messages: chatMessages,
         stream: true,
         temperature: 0.3,
-        max_tokens: 1500,
+        max_tokens: 2500,
       }),
     });
 
@@ -295,8 +345,6 @@ serve(async (req) => {
       throw new Error("Failed to generate answer");
     }
 
-    // Stream the response — send initial metadata with answerType TBD,
-    // then stream tokens. The frontend will parse ANSWER_TYPE from the text.
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const reader = completionResponse.body!.getReader();
@@ -304,7 +352,6 @@ serve(async (req) => {
 
     const stream = new ReadableStream({
       async start(controller) {
-        // Send sources metadata first (answerType will be determined from stream content)
         controller.enqueue(
           encoder.encode(
             `data: ${JSON.stringify({ type: "metadata", sources: uniqueSources, answerType: "inferred", topSimilarity: 0 })}\n\n`,
@@ -314,7 +361,6 @@ serve(async (req) => {
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            // Parse answer type from accumulated text and send update
             const detectedType = parseAnswerType(fullText);
             controller.enqueue(
               encoder.encode(
@@ -328,7 +374,6 @@ serve(async (req) => {
 
           const chunk = decoder.decode(value, { stream: true });
 
-          // Parse chunk to accumulate full text for answer type detection
           for (const line of chunk.split("\n")) {
             if (!line.startsWith("data: ")) continue;
             const jsonStr = line.slice(6).trim();
