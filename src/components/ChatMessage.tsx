@@ -22,7 +22,9 @@ const stripSourcesBlock = (text: string) => {
   let cleaned = text;
   // Strip ANSWER_TYPE line
   cleaned = cleaned.replace(/\n?ANSWER[_\s]?TYPE:\s*(DIRECT|INFERRED)\n?/gi, "");
-  // Strip SOURCES block
+  // Strip SOURCES block and all subsequent list items
+  cleaned = cleaned.replace(/\n?SOURCES:\s*\n(- .*\n?)*/gi, "");
+  // Also handle if SOURCES is at the end without trailing newline
   const sourcesIndex = cleaned.lastIndexOf("SOURCES:");
   if (sourcesIndex !== -1) cleaned = cleaned.slice(0, sourcesIndex);
   return cleaned.trimEnd();

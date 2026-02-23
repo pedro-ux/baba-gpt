@@ -87,12 +87,16 @@ export async function streamChat({
             continue;
           }
 
-          // Handle OpenAI streaming delta — strip ANSWER_TYPE line from display
+          // Handle OpenAI streaming delta — strip ANSWER_TYPE and SOURCES block from display
           const content = parsed.choices?.[0]?.delta?.content;
           if (content) {
             // Filter out the ANSWER_TYPE classification line
-            const cleaned = content.replace(/\n?ANSWER[_\s]?TYPE:\s*(DIRECT|INFERRED)\n?/gi, "");
-            if (cleaned) onDelta(cleaned);
+            let cleaned = content.replace(/\n?ANSWER[_\s]?TYPE:\s*(DIRECT|INFERRED)\n?/gi, "");
+            // Filter out SOURCES block and its list items
+            cleaned = cleaned.replace(/\n?SOURCES:\n?/gi, "");
+            cleaned = cleaned.replace(/^- \[.*?\] — .*$/gm, "");
+            cleaned = cleaned.replace(/\n{2,}/g, "\n");
+            if (cleaned.trim()) onDelta(cleaned);
           }
         } catch {
           // Partial JSON, put it back
