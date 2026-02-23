@@ -1,40 +1,49 @@
 
 
-## Problem
+## Improve Conversation Quality and Multi-Turn Retrieval
 
-The context sent to GPT-4o labels each document as `[Passage 1]`, `[Passage 2]`, etc. The LLM then cites these labels instead of the actual book or discourse title. The system prompt does not instruct the LLM to use real source names.
+### Problem
+When you ask "talk to me about guru puja" and then follow up with "what about the ideation?", the system only searches for "ideation" -- losing the guru puja context entirely. Additionally, the raw SOURCES block from GPT leaks into the displayed answer.
 
-## Solution
+### Changes
 
-Two changes in `supabase/functions/chat/index.ts`:
+### 1. Context-Aware Query Rewriting (Edge Function)
+Before retrieving documents, use the conversation history to rewrite the user's latest message into a standalone query.
 
-### 1. Relabel context passages with actual titles
+Example:
+- Turn 1: "talk to me about guru puja"
+- Turn 2: "what about the ideation?"
+- Rewritten query for retrieval: "guru puja ideation and mental process during guru puja"
 
-Change the context builder (line 239-243) from:
+This uses a cheap GPT-4o-mini call (already used for query expansion) to produce a self-contained search query from the conversation context.
 
-```
-[Passage 1] (Source: Some Book Title, Similarity: 0.8)
-```
+### 2. Fix Message Ordering in Chat Completion
+Currently, conversation history is spliced between the system prompt and the context+question message, which can confuse the model. Reorder to: system prompt, then history, then context + latest question -- ensuring the retrieved passages are always immediately before the answer.
 
-to:
+### 3. Strip SOURCES Block from Streamed Output
+The SOURCES block (e.g., "SOURCES:\n- Book Title -- ref123") currently leaks into the visible answer. Add filtering in `chat-stream.ts` to strip it, similar to how ANSWER_TYPE is already stripped.
 
-```
-[Source: "Some Book Title" | Ref: doc_id_123]
-```
+### 4. Increase Max Tokens for Richer Answers
+Raise `max_tokens` from 1500 to 2500 so the model can provide more thorough, well-cited responses for broad topics like guru puja.
 
-Remove the generic "Passage N" numbering entirely so the LLM has no choice but to cite the real title.
+---
 
-### 2. Add explicit citation rules to the system prompt
+### Technical Details
 
-Add to the SYSTEM_PROMPT (around line 12-30):
+**File: `supabase/functions/chat/index.ts`**
 
-- "ALWAYS cite sources by their exact title as provided in the context (e.g., 'Ananda Marga Philosophy in a Nutshell'). NEVER refer to sources as 'Passage 1', 'Passage 2', etc."
-- "When making a specific claim or quoting, include the source title inline, e.g.: As Baba explains in **Ananda Marga Philosophy in a Nutshell**: ..."
-- Update the SOURCES format instruction to use the actual title and doc_id/reference from the passages.
+- Add a `rewriteQueryWithHistory()` function that takes conversation history + latest message and produces a standalone query using GPT-4o-mini
+- Call it before `expandQuery()` when conversation history exists (messages.length > 1)
+- Fix `chatMessages` construction: place history before the context message (current splice logic is correct but the context message should always be last)
+- Increase `max_tokens` from 1500 to 2500
 
-### Files to modify
+**File: `src/lib/chat-stream.ts`**
 
-- `supabase/functions/chat/index.ts` -- context builder + system prompt
+- Add regex to strip the SOURCES block from streamed deltas (lines starting with "SOURCES:" and subsequent "- " lines)
+- Apply same cleaning in the final flush section
 
-No frontend changes needed since the source badges already display `source.title` and `source.reference`.
+**File: `src/components/ChatMessage.tsx`**
 
+- Update `stripSourcesBlock()` to also catch and remove the SOURCES metadata block from rendered messages
+
+### No database changes needed.
