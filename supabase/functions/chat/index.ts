@@ -28,8 +28,9 @@ CRITICAL RULES:
 10. After the ANSWER_TYPE line, list the sources in this exact format, using the actual title and reference from the provided passages:
    SOURCES:
    - [Exact Title from passage] — [Reference/doc_id from passage]
+11. Provide THOROUGH, COMPREHENSIVE answers. Cover ALL relevant aspects of the topic found in the passages. Do NOT summarize briefly when detailed explanation is available in the source material. Use multiple quotes from different passages to build a complete picture. If a concept has multiple dimensions (definition, practice, philosophy, context), address each one.
 
-Keep answers focused, clear, and grounded in the teachings.`;
+Keep answers grounded in the teachings.`;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,7 +123,7 @@ async function vectorSearch(
   const { data, error } = await externalSupabase.rpc("match_documents", {
     query_embedding: queryEmbedding,
     match_threshold: 0.2,
-    match_count: 12,
+    match_count: 15,
   });
   if (error) {
     console.error("Vector search error:", error);
@@ -198,8 +199,8 @@ function mergeAndDeduplicate(
 ): any[] {
   const seen = new Set<string>();
   const merged: any[] = [];
-  const MAX_RESULTS = 10;
-  const MAX_CONTENT_LENGTH = 2500;
+  const MAX_RESULTS = 12;
+  const MAX_CONTENT_LENGTH = 3500;
 
   // Combine all results first
   const allResults = [
@@ -379,7 +380,7 @@ serve(async (req) => {
         messages: chatMessages,
         stream: true,
         temperature: 0.3,
-        max_tokens: 2500,
+        max_tokens: 4000,
       }),
     });
 
