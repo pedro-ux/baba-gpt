@@ -93,12 +93,12 @@ async function expandQuery(userQuery: string, apiKey: string): Promise<string> {
           {
             role: "system",
             content:
-              "You are a search query expander for a corpus of spiritual texts by Sri Sri Anandamurti (Prabhat Ranjan Sarkar). Given a user question, output ONLY a single line of expanded search terms — include the original terms plus synonyms, alternative spellings, related Sanskrit/Bengali terms, and key concepts. Do not explain, just output the expanded query string.",
+              "You are a search query expander for a corpus of spiritual texts by Sri Sri Anandamurti (Prabhat Ranjan Sarkar). Given a user question, output ONLY a single line of at most 8 expanded search terms. Focus on alternative spellings, Sanskrit/Bengali synonyms, and directly related concepts ONLY. Do NOT include generic spiritual terms like God, Liberation, Enlightenment, Moksha, Spirituality, Divine. Keep terms closely tied to the specific concept asked about.",
           },
           { role: "user", content: userQuery },
         ],
         temperature: 0,
-        max_tokens: 150,
+        max_tokens: 100,
       }),
     });
     if (!res.ok) {
@@ -144,20 +144,48 @@ async function keywordSearch(
   if (keywords.length === 0) return [];
 
   try {
-    const pattern = keywords.map((k) => `%${k}%`);
+    // AND logic: require ALL keywords to match
+    let andQuery = externalSupabase
+      .from("documents")
+      .select("id, title, content, doc_id");
     
-    const { data, error } = await externalSupabase
+    for (const k of keywords) {
+      andQuery = andQuery.ilike("content", `%${k}%`);
+    }
+    
+    const { data: andData, error: andError } = await andQuery.limit(10);
+    if (andError) console.error("Keyword AND search error:", andError);
+
+    // Phrase search: exact phrase match
+    const phrasePattern = `%${keywords.join(" ")}%`;
+    const { data: phraseData, error: phraseError } = await externalSupabase
       .from("documents")
       .select("id, title, content, doc_id")
-      .or(pattern.map((p) => `content.ilike.${p}`).join(","))
-      .limit(10);
+      .ilike("content", phrasePattern)
+      .limit(5);
+    if (phraseError) console.error("Phrase search error:", phraseError);
 
-    if (error) {
-      console.error("Keyword search error:", error);
-      return [];
+    // Combine and deduplicate
+    const seen = new Set<string>();
+    const results: any[] = [];
+    // Phrase matches first (more relevant)
+    for (const doc of (phraseData || [])) {
+      const key = doc.id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({ ...doc, similarity: 0, source: "keyword" as const });
+      }
     }
-    console.log(`Keyword search found ${data?.length || 0} results for: ${keywords.join(", ")}`);
-    return (data || []).map((doc) => ({ ...doc, similarity: 0, source: "keyword" as const }));
+    for (const doc of (andData || [])) {
+      const key = doc.id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({ ...doc, similarity: 0, source: "keyword" as const });
+      }
+    }
+
+    console.log(`Keyword search found ${results.length} results (phrase: ${phraseData?.length || 0}, AND: ${andData?.length || 0}) for: ${keywords.join(", ")}`);
+    return results;
   } catch (e) {
     console.error("Keyword search exception:", e);
     return [];
@@ -170,24 +198,24 @@ function mergeAndDeduplicate(
 ): any[] {
   const seen = new Set<string>();
   const merged: any[] = [];
-  const MAX_RESULTS = 8;
-  const MAX_CONTENT_LENGTH = 1500;
+  const MAX_RESULTS = 10;
+  const MAX_CONTENT_LENGTH = 2500;
 
-  for (const doc of vectorResults) {
+  // Combine all results first
+  const allResults = [
+    ...vectorResults.map((doc) => ({ ...doc, similarity: doc.similarity || 0 })),
+    ...keywordResults.map((doc) => ({ ...doc, similarity: doc.similarity || 0 })),
+  ];
+
+  // Sort by similarity descending (vector results first, keyword-only last)
+  allResults.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
+
+  for (const doc of allResults) {
     if (merged.length >= MAX_RESULTS) break;
     const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
     if (!seen.has(key)) {
       seen.add(key);
       merged.push({ ...doc, content: doc.content?.slice(0, MAX_CONTENT_LENGTH) || "" });
-    }
-  }
-
-  for (const doc of keywordResults) {
-    if (merged.length >= MAX_RESULTS) break;
-    const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      merged.push({ ...doc, similarity: 0, content: doc.content?.slice(0, MAX_CONTENT_LENGTH) || "" });
     }
   }
 
@@ -242,35 +270,51 @@ serve(async (req) => {
     // Step 2: Expand query for better retrieval
     const expandedQuery = await expandQuery(searchQuery, OPENAI_API_KEY);
 
-    // Step 3: Generate embedding from expanded query
-    const embeddingResponse = await fetch(`${OPENAI_URL}/embeddings`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "text-embedding-3-small",
-        input: expandedQuery,
+    // Step 3: Generate embeddings for BOTH original and expanded queries (two-pass)
+    const [originalEmbeddingRes, expandedEmbeddingRes] = await Promise.all([
+      fetch(`${OPENAI_URL}/embeddings`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "text-embedding-3-small", input: searchQuery }),
       }),
-    });
+      fetch(`${OPENAI_URL}/embeddings`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "text-embedding-3-small", input: expandedQuery }),
+      }),
+    ]);
 
-    if (!embeddingResponse.ok) {
-      const errText = await embeddingResponse.text();
-      console.error("Embedding error:", embeddingResponse.status, errText);
-      throw new Error(`Failed to generate query embedding`);
+    if (!originalEmbeddingRes.ok || !expandedEmbeddingRes.ok) {
+      console.error("Embedding error:", originalEmbeddingRes.status, expandedEmbeddingRes.status);
+      throw new Error("Failed to generate query embeddings");
     }
 
-    const embeddingData = await embeddingResponse.json();
-    const queryEmbedding = embeddingData.data[0].embedding;
+    const [originalEmbData, expandedEmbData] = await Promise.all([
+      originalEmbeddingRes.json(),
+      expandedEmbeddingRes.json(),
+    ]);
+    const originalEmbedding = originalEmbData.data[0].embedding;
+    const expandedEmbedding = expandedEmbData.data[0].embedding;
 
-    // Step 4: Hybrid search — vector + keyword in parallel
-    const [vectorResults, keywordResults] = await Promise.all([
-      vectorSearch(externalSupabase, queryEmbedding),
+    // Step 4: Hybrid search — two vector passes + keyword in parallel
+    const [originalVectorResults, expandedVectorResults, keywordResults] = await Promise.all([
+      vectorSearch(externalSupabase, originalEmbedding),
+      vectorSearch(externalSupabase, expandedEmbedding),
       keywordSearch(externalSupabase, searchQuery),
     ]);
 
-    console.log(`Vector: ${vectorResults.length} results, Keyword: ${keywordResults.length} results`);
+    // Merge both vector result sets (dedup by ID, keep highest similarity)
+    const vectorMap = new Map<string, any>();
+    for (const doc of [...originalVectorResults, ...expandedVectorResults]) {
+      const key = doc.id;
+      const existing = vectorMap.get(key);
+      if (!existing || (doc.similarity || 0) > (existing.similarity || 0)) {
+        vectorMap.set(key, doc);
+      }
+    }
+    const vectorResults = Array.from(vectorMap.values());
+
+    console.log(`Vector: ${vectorResults.length} results (orig: ${originalVectorResults.length}, expanded: ${expandedVectorResults.length}), Keyword: ${keywordResults.length} results`);
 
     const matchedDocs = mergeAndDeduplicate(vectorResults, keywordResults);
 
