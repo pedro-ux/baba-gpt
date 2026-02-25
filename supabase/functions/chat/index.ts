@@ -148,7 +148,7 @@ async function keywordSearch(
     // AND logic: require ALL keywords to match
     let andQuery = externalSupabase
       .from("documents")
-      .select("id, title, content, doc_id");
+      .select("id, discourse_title, content, discourse_id");
     
     for (const k of keywords) {
       andQuery = andQuery.ilike("content", `%${k}%`);
@@ -161,7 +161,7 @@ async function keywordSearch(
     const phrasePattern = `%${keywords.join(" ")}%`;
     const { data: phraseData, error: phraseError } = await externalSupabase
       .from("documents")
-      .select("id, title, content, doc_id")
+      .select("id, discourse_title, content, discourse_id")
       .ilike("content", phrasePattern)
       .limit(5);
     if (phraseError) console.error("Phrase search error:", phraseError);
@@ -213,7 +213,7 @@ function mergeAndDeduplicate(
 
   for (const doc of allResults) {
     if (merged.length >= MAX_RESULTS) break;
-    const key = doc.id || `${doc.title}::${doc.content?.slice(0, 100)}`;
+    const key = doc.id || `${doc.discourse_title}::${doc.content?.slice(0, 100)}`;
     if (!seen.has(key)) {
       seen.add(key);
       merged.push({ ...doc, content: doc.content?.slice(0, MAX_CONTENT_LENGTH) || "" });
@@ -334,13 +334,13 @@ serve(async (req) => {
     const context = matchedDocs
       .map(
         (doc: any) =>
-          `[Source: "${doc.title || "Unknown"}" | Ref: ${doc.doc_id || "N/A"}]\n${doc.content}`,
+          `[Source: "${doc.discourse_title || "Unknown"}" | Ref: ${doc.discourse_id || "N/A"}]\n${doc.content}`,
       )
       .join("\n\n---\n\n");
 
     const sources = matchedDocs.map((doc: any) => ({
-      title: doc.title || "Unknown Source",
-      reference: doc.doc_id || "",
+      title: doc.discourse_title || "Unknown Source",
+      reference: doc.discourse_id || "",
     }));
 
     const uniqueSources = sources.filter(
