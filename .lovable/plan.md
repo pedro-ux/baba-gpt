@@ -1,30 +1,37 @@
 
 
-## Improve Conversation Quality and Multi-Turn Retrieval
+## Improve Retrieval Quality for Broad Concepts
 
 ### Problem
-When you ask "talk to me about guru puja" and then follow up with "what about the ideation?", the system only searches for "ideation" -- losing the guru puja context entirely. Additionally, the raw SOURCES block from GPT leaks into the displayed answer.
+For well-known concepts like "Taraka Brahma", the system retrieves 22 raw results but the final answer is unsatisfactory because:
+- Keyword search matches "taraka" OR "brahma" separately, pulling in unrelated passages about Brahma alone
+- Query expansion generates overly broad terms ("God", "Moksha", "Spirituality") that dilute vector search quality
+- Content is truncated to 1500 characters, cutting off explanations mid-thought
+- Only 8 passages are sent to the LLM, limiting coverage of a multi-faceted topic
+- Keyword results have no relevance ranking -- arbitrary database order
 
 ### Changes
 
-### 1. Context-Aware Query Rewriting (Edge Function)
-Before retrieving documents, use the conversation history to rewrite the user's latest message into a standalone query.
+### 1. Smarter Keyword Search (AND logic + phrase matching)
+Change keyword search to require ALL significant terms match (AND instead of OR). Also add a separate phrase search for the exact query string.
 
-Example:
-- Turn 1: "talk to me about guru puja"
-- Turn 2: "what about the ideation?"
-- Rewritten query for retrieval: "guru puja ideation and mental process during guru puja"
+Example for "taraka brahma":
+- Current: matches docs with "taraka" OR "brahma" (too broad)
+- Proposed: matches docs with "taraka" AND "brahma", plus a phrase search for "taraka brahma"
 
-This uses a cheap GPT-4o-mini call (already used for query expansion) to produce a self-contained search query from the conversation context.
+### 2. Constrain Query Expansion
+Update the query expansion prompt to produce fewer, more targeted terms (max 5-8 terms) and avoid overly generic spiritual terms. Focus on alternative spellings and closely related Sanskrit concepts only.
 
-### 2. Fix Message Ordering in Chat Completion
-Currently, conversation history is spliced between the system prompt and the context+question message, which can confuse the model. Reorder to: system prompt, then history, then context + latest question -- ensuring the retrieved passages are always immediately before the answer.
+### 3. Increase Context Window
+- Raise `MAX_CONTENT_LENGTH` from 1500 to 2500 characters per passage
+- Raise `MAX_RESULTS` from 8 to 10 passages
+- This gives the LLM substantially more material to work with
 
-### 3. Strip SOURCES Block from Streamed Output
-The SOURCES block (e.g., "SOURCES:\n- Book Title -- ref123") currently leaks into the visible answer. Add filtering in `chat-stream.ts` to strip it, similar to how ANSWER_TYPE is already stripped.
+### 4. Prioritize Vector Results with Re-ranking
+Sort merged results by vector similarity score so the most semantically relevant passages appear first. Keyword-only results (similarity = 0) go last as supplementary context.
 
-### 4. Increase Max Tokens for Richer Answers
-Raise `max_tokens` from 1500 to 2500 so the model can provide more thorough, well-cited responses for broad topics like guru puja.
+### 5. Two-Pass Embedding Strategy
+Generate embeddings for both the original query AND the expanded query, then combine vector results from both. This prevents expansion drift -- the original "taraka brahma" embedding stays pure while the expanded one catches related concepts.
 
 ---
 
@@ -32,18 +39,22 @@ Raise `max_tokens` from 1500 to 2500 so the model can provide more thorough, wel
 
 **File: `supabase/functions/chat/index.ts`**
 
-- Add a `rewriteQueryWithHistory()` function that takes conversation history + latest message and produces a standalone query using GPT-4o-mini
-- Call it before `expandQuery()` when conversation history exists (messages.length > 1)
-- Fix `chatMessages` construction: place history before the context message (current splice logic is correct but the context message should always be last)
-- Increase `max_tokens` from 1500 to 2500
+**Keyword search function (lines 134-165)**
+- Change `.or()` to use AND logic: filter rows where content matches ALL keywords
+- Add a separate phrase-match query for the exact user query string
+- Combine both result sets
 
-**File: `src/lib/chat-stream.ts`**
+**Query expansion prompt (lines 85-115)**
+- Revise system prompt to: "Output at most 8 expanded terms. Focus on alternative spellings, Sanskrit synonyms, and directly related concepts only. Do NOT include generic spiritual terms like God, Liberation, Enlightenment."
 
-- Add regex to strip the SOURCES block from streamed deltas (lines starting with "SOURCES:" and subsequent "- " lines)
-- Apply same cleaning in the final flush section
+**Merge function (lines 167-195)**
+- Increase `MAX_RESULTS` from 8 to 10
+- Increase `MAX_CONTENT_LENGTH` from 1500 to 2500
+- Sort final merged array by similarity score descending before returning
 
-**File: `src/components/ChatMessage.tsx`**
+**Embedding generation (around lines 250-270)**
+- Generate two embeddings: one for the original/rewritten query, one for the expanded query
+- Run two parallel vector searches
+- Merge both result sets (dedup by doc ID) before combining with keyword results
 
-- Update `stripSourcesBlock()` to also catch and remove the SOURCES metadata block from rendered messages
-
-### No database changes needed.
+### No database or frontend changes needed.
