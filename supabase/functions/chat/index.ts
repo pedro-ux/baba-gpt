@@ -48,6 +48,26 @@ function fetchWithTimeout(
   );
 }
 
+async function fetchWithRetry(
+  url: string,
+  opts: RequestInit,
+  timeoutMs: number,
+  maxRetries = 3,
+): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetchWithTimeout(url, opts, timeoutMs);
+    if (res.status === 429 && attempt < maxRetries) {
+      const retryAfter = parseInt(res.headers.get("retry-after") || "0", 10);
+      const delay = Math.max(retryAfter * 1000, 1000 * Math.pow(2, attempt));
+      console.log(`Rate limited (429), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise((r) => setTimeout(r, delay));
+      continue;
+    }
+    return res;
+  }
+  return fetchWithTimeout(url, opts, timeoutMs);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
