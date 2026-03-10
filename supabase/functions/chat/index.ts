@@ -33,6 +33,22 @@ CRITICAL RULES:
 Keep answers grounded in the teachings.`;
 
 // ---------------------------------------------------------------------------
+// Timeout helper
+// ---------------------------------------------------------------------------
+
+function fetchWithTimeout(
+  url: string,
+  opts: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() =>
+    clearTimeout(timer)
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -42,33 +58,36 @@ async function rewriteQueryWithHistory(
   apiKey: string,
 ): Promise<string> {
   try {
-    // Build a condensed conversation summary for the rewriter
     const historyText = messages
-      .slice(0, -1) // exclude the latest message
+      .slice(0, -1)
       .map((m) => `${m.role}: ${m.content}`)
-      .slice(-6) // last 6 turns max
+      .slice(-6)
       .join("\n");
 
-    const res = await fetch(`${OPENAI_URL}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a search query rewriter. Given a conversation history and the user's latest message, rewrite the latest message into a STANDALONE search query that captures the full intent including context from prior messages. Output ONLY the rewritten query, nothing else.",
-          },
-          {
-            role: "user",
-            content: `Conversation history:\n${historyText}\n\nLatest message: ${latestQuery}\n\nRewrite this into a standalone search query:`,
-          },
-        ],
-        temperature: 0,
-        max_tokens: 150,
-      }),
-    });
+    const res = await fetchWithTimeout(
+      `${OPENAI_URL}/chat/completions`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a search query rewriter. Given a conversation history and the user's latest message, rewrite the latest message into a STANDALONE search query that captures the full intent including context from prior messages. Output ONLY the rewritten query, nothing else.",
+            },
+            {
+              role: "user",
+              content: `Conversation history:\n${historyText}\n\nLatest message: ${latestQuery}\n\nRewrite this into a standalone search query:`,
+            },
+          ],
+          temperature: 0,
+          max_tokens: 150,
+        }),
+      },
+      5000, // 5s timeout
+    );
     if (!res.ok) {
       console.error("Query rewrite failed:", res.status);
       return latestQuery;
@@ -78,30 +97,34 @@ async function rewriteQueryWithHistory(
     console.log("Rewritten query:", rewritten);
     return rewritten || latestQuery;
   } catch (e) {
-    console.error("Query rewrite error:", e);
-    return latestQuery;
+    console.error("Query rewrite error (timeout or network):", e);
+    return latestQuery; // graceful fallback
   }
 }
 
 async function expandQuery(userQuery: string, apiKey: string): Promise<string> {
   try {
-    const res = await fetch(`${OPENAI_URL}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a search query expander for a corpus of spiritual texts by Sri Sri Anandamurti (Prabhat Ranjan Sarkar). Given a user question, output ONLY a single line of at most 8 expanded search terms. Focus on alternative spellings, Sanskrit/Bengali synonyms, and directly related concepts ONLY. Do NOT include generic spiritual terms like God, Liberation, Enlightenment, Moksha, Spirituality, Divine. Keep terms closely tied to the specific concept asked about.",
-          },
-          { role: "user", content: userQuery },
-        ],
-        temperature: 0,
-        max_tokens: 100,
-      }),
-    });
+    const res = await fetchWithTimeout(
+      `${OPENAI_URL}/chat/completions`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a search query expander for a corpus of spiritual texts by Sri Sri Anandamurti (Prabhat Ranjan Sarkar). Given a user question, output ONLY a single line of at most 8 expanded search terms. Focus on alternative spellings, Sanskrit/Bengali synonyms, and directly related concepts ONLY. Do NOT include generic spiritual terms like God, Liberation, Enlightenment, Moksha, Spirituality, Divine. Keep terms closely tied to the specific concept asked about.",
+            },
+            { role: "user", content: userQuery },
+          ],
+          temperature: 0,
+          max_tokens: 100,
+        }),
+      },
+      5000, // 5s timeout
+    );
     if (!res.ok) {
       console.error("Query expansion failed:", res.status);
       return userQuery;
@@ -111,8 +134,8 @@ async function expandQuery(userQuery: string, apiKey: string): Promise<string> {
     console.log("Expanded query:", expanded);
     return expanded || userQuery;
   } catch (e) {
-    console.error("Query expansion error:", e);
-    return userQuery;
+    console.error("Query expansion error (timeout or network):", e);
+    return userQuery; // graceful fallback
   }
 }
 
@@ -120,16 +143,24 @@ async function vectorSearch(
   externalSupabase: ReturnType<typeof createClient>,
   queryEmbedding: number[],
 ) {
-  const { data, error } = await externalSupabase.rpc("match_documents", {
-    query_embedding: queryEmbedding,
-    match_threshold: 0.2,
-    match_count: 15,
-  });
-  if (error) {
-    console.error("Vector search error:", error);
-    return [];
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const { data, error } = await externalSupabase.rpc("match_documents", {
+      query_embedding: queryEmbedding,
+      match_threshold: 0.25,
+      match_count: 10,
+    });
+    clearTimeout(timer);
+    if (error) {
+      console.error("Vector search error:", error);
+      return [];
+    }
+    return data || [];
+  } catch (e) {
+    console.error("Vector search timeout/error:", e);
+    return []; // graceful fallback
   }
-  return data || [];
 }
 
 async function keywordSearch(
@@ -154,31 +185,41 @@ async function keywordSearch(
       andQuery = andQuery.ilike("content", `%${k}%`);
     }
     
-    const { data: andData, error: andError } = await andQuery.limit(10);
-    if (andError) console.error("Keyword AND search error:", andError);
+    const andPromise = andQuery.limit(10);
 
     // Phrase search: exact phrase match
     const phrasePattern = `%${keywords.join(" ")}%`;
-    const { data: phraseData, error: phraseError } = await externalSupabase
+    const phrasePromise = externalSupabase
       .from("documents")
       .select("id, discourse_title, content, discourse_id")
       .ilike("content", phrasePattern)
       .limit(5);
-    if (phraseError) console.error("Phrase search error:", phraseError);
+
+    // Run both in parallel with a race against timeout
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), 8000)
+    );
+
+    const [andResult, phraseResult] = await Promise.all([
+      Promise.race([andPromise, timeoutPromise]),
+      Promise.race([phrasePromise, timeoutPromise]),
+    ]);
+
+    const andData = andResult && typeof andResult === 'object' && 'data' in andResult ? (andResult as any).data : null;
+    const phraseData = phraseResult && typeof phraseResult === 'object' && 'data' in phraseResult ? (phraseResult as any).data : null;
 
     // Combine and deduplicate
     const seen = new Set<string>();
     const results: any[] = [];
-    // Phrase matches first (more relevant)
     for (const doc of (phraseData || [])) {
-      const key = doc.id;
+      const key = String(doc.id);
       if (!seen.has(key)) {
         seen.add(key);
         results.push({ ...doc, similarity: 0, source: "keyword" as const });
       }
     }
     for (const doc of (andData || [])) {
-      const key = doc.id;
+      const key = String(doc.id);
       if (!seen.has(key)) {
         seen.add(key);
         results.push({ ...doc, similarity: 0, source: "keyword" as const });
@@ -202,13 +243,11 @@ function mergeAndDeduplicate(
   const MAX_RESULTS = 12;
   const MAX_CONTENT_LENGTH = 3500;
 
-  // Combine all results first
   const allResults = [
     ...vectorResults.map((doc) => ({ ...doc, similarity: doc.similarity || 0 })),
     ...keywordResults.map((doc) => ({ ...doc, similarity: doc.similarity || 0 })),
   ];
 
-  // Sort by similarity descending (vector results first, keyword-only last)
   allResults.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
 
   for (const doc of allResults) {
@@ -262,27 +301,43 @@ serve(async (req) => {
 
     const externalSupabase = createClient(EXTERNAL_SUPABASE_URL, EXTERNAL_SUPABASE_KEY);
 
-    // Step 1: Rewrite query with conversation context if multi-turn
+    // Step 1: Rewrite + Expand in PARALLEL (saves 1-2s)
     let searchQuery = userQuery;
+    let expandedQuery = userQuery;
+
     if (messages && messages.length > 1) {
-      searchQuery = await rewriteQueryWithHistory(messages, userQuery, OPENAI_API_KEY);
+      // Multi-turn: rewrite and expand in parallel
+      const [rewritten, expanded] = await Promise.all([
+        rewriteQueryWithHistory(messages, userQuery, OPENAI_API_KEY),
+        expandQuery(userQuery, OPENAI_API_KEY),
+      ]);
+      searchQuery = rewritten;
+      expandedQuery = expanded;
+    } else {
+      // Single-turn: only expand (no rewrite needed)
+      expandedQuery = await expandQuery(searchQuery, OPENAI_API_KEY);
     }
 
-    // Step 2: Expand query for better retrieval
-    const expandedQuery = await expandQuery(searchQuery, OPENAI_API_KEY);
-
-    // Step 3: Generate embeddings for BOTH original and expanded queries (two-pass)
+    // Step 2: Generate embeddings for BOTH original and expanded queries
     const [originalEmbeddingRes, expandedEmbeddingRes] = await Promise.all([
-      fetch(`${OPENAI_URL}/embeddings`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "text-embedding-3-small", input: searchQuery }),
-      }),
-      fetch(`${OPENAI_URL}/embeddings`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "text-embedding-3-small", input: expandedQuery }),
-      }),
+      fetchWithTimeout(
+        `${OPENAI_URL}/embeddings`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "text-embedding-3-small", input: searchQuery }),
+        },
+        8000, // 8s timeout
+      ),
+      fetchWithTimeout(
+        `${OPENAI_URL}/embeddings`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "text-embedding-3-small", input: expandedQuery }),
+        },
+        8000, // 8s timeout
+      ),
     ]);
 
     if (!originalEmbeddingRes.ok || !expandedEmbeddingRes.ok) {
@@ -297,7 +352,7 @@ serve(async (req) => {
     const originalEmbedding = originalEmbData.data[0].embedding;
     const expandedEmbedding = expandedEmbData.data[0].embedding;
 
-    // Step 4: Hybrid search — two vector passes + keyword in parallel
+    // Step 3: Hybrid search — two vector passes + keyword in parallel
     const [originalVectorResults, expandedVectorResults, keywordResults] = await Promise.all([
       vectorSearch(externalSupabase, originalEmbedding),
       vectorSearch(externalSupabase, expandedEmbedding),
@@ -307,7 +362,7 @@ serve(async (req) => {
     // Merge both vector result sets (dedup by ID, keep highest similarity)
     const vectorMap = new Map<string, any>();
     for (const doc of [...originalVectorResults, ...expandedVectorResults]) {
-      const key = doc.id;
+      const key = String(doc.id);
       const existing = vectorMap.get(key);
       if (!existing || (doc.similarity || 0) > (existing.similarity || 0)) {
         vectorMap.set(key, doc);
@@ -330,7 +385,7 @@ serve(async (req) => {
       );
     }
 
-    // Step 5: Build context from matched documents
+    // Step 4: Build context from matched documents
     const context = matchedDocs
       .map(
         (doc: any) =>
@@ -348,13 +403,11 @@ serve(async (req) => {
         arr.findIndex((x) => x.title === s.title) === i,
     );
 
-    // Step 6: Generate answer with OpenAI (streaming)
-    // Message ordering: system prompt → conversation history → context + latest question
+    // Step 5: Generate answer with OpenAI (streaming) — 60s timeout
     const chatMessages: { role: string; content: string }[] = [
       { role: "system", content: SYSTEM_PROMPT },
     ];
 
-    // Add conversation history BEFORE the context message
     if (messages && messages.length > 1) {
       const history = messages.slice(0, -1).map((m: { role: string; content: string }) => ({
         role: m.role,
@@ -363,26 +416,29 @@ serve(async (req) => {
       chatMessages.push(...history);
     }
 
-    // Context + latest question is always LAST (closest to the answer)
     chatMessages.push({
       role: "user",
       content: `Context passages from Baba's writings:\n\n${context}\n\n---\n\nUser question: ${userQuery}`,
     });
 
-    const completionResponse = await fetch(`${OPENAI_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
+    const completionResponse = await fetchWithTimeout(
+      `${OPENAI_URL}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: chatMessages,
+          stream: true,
+          temperature: 0.3,
+          max_tokens: 4000,
+        }),
       },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        messages: chatMessages,
-        stream: true,
-        temperature: 0.3,
-        max_tokens: 4000,
-      }),
-    });
+      60000, // 60s timeout for completion
+    );
 
     if (!completionResponse.ok) {
       const errText = await completionResponse.text();
