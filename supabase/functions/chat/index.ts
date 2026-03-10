@@ -48,6 +48,26 @@ function fetchWithTimeout(
   );
 }
 
+async function fetchWithRetry(
+  url: string,
+  opts: RequestInit,
+  timeoutMs: number,
+  maxRetries = 3,
+): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetchWithTimeout(url, opts, timeoutMs);
+    if (res.status === 429 && attempt < maxRetries) {
+      const retryAfter = parseInt(res.headers.get("retry-after") || "0", 10);
+      const delay = Math.max(retryAfter * 1000, 1000 * Math.pow(2, attempt));
+      console.log(`Rate limited (429), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise((r) => setTimeout(r, delay));
+      continue;
+    }
+    return res;
+  }
+  return fetchWithTimeout(url, opts, timeoutMs);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -64,7 +84,7 @@ async function rewriteQueryWithHistory(
       .slice(-6)
       .join("\n");
 
-    const res = await fetchWithTimeout(
+    const res = await fetchWithRetry(
       `${OPENAI_URL}/chat/completions`,
       {
         method: "POST",
@@ -104,7 +124,7 @@ async function rewriteQueryWithHistory(
 
 async function expandQuery(userQuery: string, apiKey: string): Promise<string> {
   try {
-    const res = await fetchWithTimeout(
+    const res = await fetchWithRetry(
       `${OPENAI_URL}/chat/completions`,
       {
         method: "POST",
@@ -320,23 +340,23 @@ serve(async (req) => {
 
     // Step 2: Generate embeddings for BOTH original and expanded queries
     const [originalEmbeddingRes, expandedEmbeddingRes] = await Promise.all([
-      fetchWithTimeout(
+      fetchWithRetry(
         `${OPENAI_URL}/embeddings`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: "text-embedding-3-small", input: searchQuery }),
         },
-        8000, // 8s timeout
+        8000,
       ),
-      fetchWithTimeout(
+      fetchWithRetry(
         `${OPENAI_URL}/embeddings`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: "text-embedding-3-small", input: expandedQuery }),
         },
-        8000, // 8s timeout
+        8000,
       ),
     ]);
 
@@ -421,7 +441,7 @@ serve(async (req) => {
       content: `Context passages from Baba's writings:\n\n${context}\n\n---\n\nUser question: ${userQuery}`,
     });
 
-    const completionResponse = await fetchWithTimeout(
+    const completionResponse = await fetchWithRetry(
       `${OPENAI_URL}/chat/completions`,
       {
         method: "POST",
