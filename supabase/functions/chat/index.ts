@@ -441,7 +441,7 @@ serve(async (req) => {
       content: `Context passages from Baba's writings:\n\n${context}\n\n---\n\nUser question: ${userQuery}`,
     });
 
-    const completionResponse = await fetchWithTimeout(
+    const completionResponse = await fetchWithRetry(
       `${OPENAI_URL}/chat/completions`,
       {
         method: "POST",
