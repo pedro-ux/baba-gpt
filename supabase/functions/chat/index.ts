@@ -124,7 +124,7 @@ async function rewriteQueryWithHistory(
 
 async function expandQuery(userQuery: string, apiKey: string): Promise<string> {
   try {
-    const res = await fetchWithTimeout(
+    const res = await fetchWithRetry(
       `${OPENAI_URL}/chat/completions`,
       {
         method: "POST",
