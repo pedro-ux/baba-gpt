@@ -84,7 +84,7 @@ async function rewriteQueryWithHistory(
       .slice(-6)
       .join("\n");
 
-    const res = await fetchWithTimeout(
+    const res = await fetchWithRetry(
       `${OPENAI_URL}/chat/completions`,
       {
         method: "POST",
