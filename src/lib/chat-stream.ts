@@ -26,6 +26,9 @@ export async function streamChat({
   onDone,
   onError,
 }: StreamChatOptions) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000); // 90s client timeout
+
   try {
     const resp = await fetch(CHAT_URL, {
       method: "POST",
@@ -34,6 +37,7 @@ export async function streamChat({
         Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
       },
       body: JSON.stringify({ query, messages }),
+      signal: controller.signal,
     });
 
     if (!resp.ok) {
