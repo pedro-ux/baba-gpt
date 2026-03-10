@@ -340,23 +340,23 @@ serve(async (req) => {
 
     // Step 2: Generate embeddings for BOTH original and expanded queries
     const [originalEmbeddingRes, expandedEmbeddingRes] = await Promise.all([
-      fetchWithTimeout(
+      fetchWithRetry(
         `${OPENAI_URL}/embeddings`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: "text-embedding-3-small", input: searchQuery }),
         },
-        8000, // 8s timeout
+        8000,
       ),
-      fetchWithTimeout(
+      fetchWithRetry(
         `${OPENAI_URL}/embeddings`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: "text-embedding-3-small", input: expandedQuery }),
         },
-        8000, // 8s timeout
+        8000,
       ),
     ]);
 
