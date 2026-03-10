@@ -128,6 +128,12 @@ export async function streamChat({
 
     onDone();
   } catch (e) {
-    onError(e instanceof Error ? e.message : "Connection error");
+    if (e instanceof DOMException && e.name === "AbortError") {
+      onError("Request timed out. Please try again.");
+    } else {
+      onError(e instanceof Error ? e.message : "Connection error");
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 }
