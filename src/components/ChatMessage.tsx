@@ -63,29 +63,7 @@ const ChatMessage = ({ role, content, sources, isStreaming, answerType }: ChatMe
           </div>
         ) : (
           <div className="font-body text-sm md:text-base leading-relaxed text-foreground/90 prose-baba">
-            {answerType && !isStreaming && (
-              <div className="mb-3">
-                <span
-                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-body font-medium tracking-wide uppercase ${
-                    answerType === "direct"
-                      ? "bg-primary/15 text-primary border border-primary/20"
-                      : "bg-lotus/15 text-lotus border border-lotus/20"
-                  }`}
-                >
-                  {answerType === "direct" ? (
-                    <>
-                      <BookCheck className="w-3.5 h-3.5" />
-                      Direct Source
-                    </>
-                  ) : (
-                    <>
-                      <Lightbulb className="w-3.5 h-3.5" />
-                      Inferred
-                    </>
-                  )}
-                </span>
-              </div>
-            )}
+            
             <ReactMarkdown
               components={{
                 p: ({ children }) => (
